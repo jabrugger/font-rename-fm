@@ -9,7 +9,7 @@ This MIT-licensed fork extends [i-defranca/font-rename-fm](https://github.com/i-
 Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-fm/releases), then install it:
 
 ```console
-python -m pip install ./font_rename_fm-0.2.9-py3-none-any.whl
+python -m pip install ./font_rename_fm-0.2.10-py3-none-any.whl
 ```
 
 Alternatively, install this repository checkout with `python -m pip install .`.
@@ -39,7 +39,7 @@ Test on a copy first. `--apply` can rename files, extract collection members and
 - For non-Latin names, produces `Transliteration [Original]`. Transliteration is automatic, not translation; language-specific readings and missing Arabic vowels cannot be inferred reliably.
 - SHA-256 narrows duplicate candidates, then exact byte comparison decides. Only byte-identical files are removed. Deduplication spans all supplied folders; the retained copy can therefore be in another input folder.
 - Different contents sharing a name are preserved. Differing style, version, manufacturer, weight, width, PostScript name or unique identifier can be added in brackets. Up to two descriptive fields are combined; a 12-digit SHA-256 prefix is the fallback. Numbers are a final fallback for retained identical copies or occupied destinations. The first retained font keeps the plain name.
-- Names are limited to 180 UTF-16 units before the extension. This bounds the filename, not the full path length.
+- Names are limited to 180 UTF-16 units and 235 UTF-8 bytes before the extension, reserving space for backups on filesystems with a 255-byte filename limit. This bounds the filename, not the full path length.
 - Extracts TTC/OTC members and retains an original collection. Byte-identical collections can be consolidated. A member without a usable name does not block other members when the collection can be opened.
 - Keeps unreadable or unusable fonts and reports errors while continuing with other inputs. A nonzero exit status means at least one operation was skipped or failed; it does not roll back earlier successful operations.
 

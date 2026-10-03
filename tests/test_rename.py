@@ -483,6 +483,7 @@ class RenameTests(unittest.TestCase):
         for path in self.folder.glob('*.ttf'):
             self.assertEqual(path.stem.count('['), path.stem.count(']'))
             self.assertLessEqual(len(path.stem.encode('utf-16-le')) // 2, 180)
+            self.assertLessEqual(len((path.name + '.original.bak').encode('utf-8')), 255)
 
     def test_long_native_manufacturer_collision_preserves_brackets(self):
         for filename, maker in (('a.ttf', '黑体' * 100), ('b.ttf', 'العربية' * 100)):
@@ -493,6 +494,7 @@ class RenameTests(unittest.TestCase):
         for path in self.folder.glob('*.ttf'):
             self.assertEqual(path.stem.count('['), path.stem.count(']'))
             self.assertLessEqual(len(path.stem.encode('utf-16-le')) // 2, 180)
+            self.assertLessEqual(len((path.name + '.original.bak').encode('utf-8')), 255)
 
     def test_false_backup_does_not_authorize_duplicate_removal(self):
         make_font(self.folder / 'a.ttf', 'Test', width=500)

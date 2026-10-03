@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- Fix Linux filename-length failures for long non-Latin names. Filenames and metadata suffixes now respect UTF-8 byte limits as well as Windows UTF-16 limits, with space reserved for backup filenames.
+
 ## 0.2.9
 
 First public release of this fork, incorporating the locally tested 0.2.x improvements:

@@ -214,7 +214,7 @@ def filename_stem(name, transliterate=True):
         stem = original
     while len(stem.encode('utf-16-le')) // 2 > 180:
         stem = stem[:-1]
-    return stem.rstrip(' .')
+    return portable_stem(stem.rstrip(' .'), 180, 235)
 
 
 def truncate_name(value, limit):
@@ -231,6 +231,18 @@ def fit_stem(value, limit):
         latin = truncate_name(latin, limit - len(native.encode('utf-16-le')) // 2 - 3)
         return f'{latin} [{native}]'
     return truncate_name(value, limit)
+
+
+def portable_stem(value, utf16_limit, utf8_limit):
+    """Respect Windows UTF-16 and POSIX byte limits, reserving backup space."""
+    limit = utf16_limit
+    result = fit_stem(value, limit)
+    while len(result.encode('utf-8')) > utf8_limit:
+        limit -= 1
+        if limit < 4:
+            raise ValueError('Not enough filename space for this collision suffix')
+        result = fit_stem(value, limit)
+    return result
 
 
 def normalized_bytes(original):
@@ -265,7 +277,7 @@ def identification_metadata(data, transliterate=True):
                             if key == 'version':
                                 match = re.search(r'(?i)\b(?:version\s*)?(\d+(?:\.\d+)+)', value)
                                 value = 'v' + match.group(1) if match else value
-                            result[key] = fit_stem(filename_stem(value, transliterate), 70)
+                            result[key] = portable_stem(filename_stem(value, transliterate), 70, 70)
                             break
                         except (UnicodeError, LookupError, ValueError):
                             continue
@@ -344,7 +356,8 @@ class Renamer:
             suffix = (' [' + '; '.join(labels) + ']') if labels else ''
             if number > 1:
                 suffix += f' ({number})'
-            base = fit_stem(stem, 180 - len(suffix.encode('utf-16-le')) // 2)
+            base = portable_stem(stem, 180 - len(suffix.encode('utf-16-le')) // 2,
+                                 235 - len(suffix.encode('utf-8')))
             target = source.parent / f'{base}{suffix}{extension}'
             ref = self.reserved.get(self.key(target))
             occupant = None

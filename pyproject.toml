@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "font-rename-fm"
-version = "0.2.9"
+version = "0.2.10"
 description = "Preview-first font renaming, exact deduplication, transliteration and optional internal-name cleanup."
 authors = ["Jay Soren <futuremotiondev@gmail.com>"]
 maintainers = ["jabrugger"]
