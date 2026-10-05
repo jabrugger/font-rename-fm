@@ -66,7 +66,7 @@ class RenameTests(unittest.TestCase):
             engine = self.run_renamer(apply=False)
         self.assertEqual(engine.errors, 0)
         self.assertIn('skipping malformed name record #0', errors.getvalue())
-        self.assertIn(f'FILE: {path}', errors.getvalue())
+        self.assertIn(f'FILE: {path.resolve()}', errors.getvalue())
         self.assertEqual(errors.getvalue().count('skipping malformed name record #0'), 1)
         self.assertEqual((logger.handlers, logger.level, logger.propagate), previous)
         self.assertEqual(path.read_bytes(), bytes(data))
@@ -82,7 +82,7 @@ class RenameTests(unittest.TestCase):
         with contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.normalize_internal_names', side_effect=diagnostic):
             normalize_retained_names(engine)
         self.assertIn('Name diagnostic', errors.getvalue())
-        self.assertIn(f'FILE: {path}', errors.getvalue())
+        self.assertIn(f'FILE: {path.resolve()}', errors.getvalue())
 
     def test_log_captures_unicode_console_and_diagnostics_and_appends(self):
         path = self.folder / 'source.ttf'
@@ -99,7 +99,7 @@ class RenameTests(unittest.TestCase):
             self.assertEqual(main([str(path), '--log', str(logfile)]), 0)
         log = logfile.read_text(encoding='utf-8')
         self.assertTrue(log.startswith('PREVIOUS SESSION\n'))
-        for expected in ('=== START ', '=== END ', 'RENAME:', '黑体', 'Diagnostic 中文', f'FILE: {path}', 'EXIT STATUS: 0'):
+        for expected in ('=== START ', '=== END ', 'RENAME:', '黑体', 'Diagnostic 中文', f'FILE: {path.resolve()}', 'EXIT STATUS: 0'):
             self.assertIn(expected, log)
         self.assertIn('Diagnostic 中文', errors.getvalue())
         self.assertIn('RENAME:', self.log.getvalue())
