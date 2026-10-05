@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Rename font files safely, preserving distinct contents and Unicode names."""
 import argparse
+import contextlib
+import logging
+import json
+from datetime import datetime
 import hashlib
 import io
 import os
 import re
 import sys
+import struct
 import tempfile
 import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +27,87 @@ PREFERRED_IDS = ((3, 10, 0x0409), (3, 1, 0x0409), (3, 0, 0x0409),
 PREFERRED_NAME_IDS = (4, 6, 16, 1)
 FONT_SUFFIXES = {'.ttf', '.otf', '.ttc', '.otc'}
 DISPLAY_NAME_IDS = {1, 2, 4, 16, 17, 18, 21, 22}
+
+
+def local_timestamp():
+    return datetime.now().isoformat(sep=' ', timespec='milliseconds')
+
+
+class TimestampedLog:
+    """Prefix physical log lines, even when print writes text and newline separately."""
+    def __init__(self, logfile):
+        self.logfile = logfile
+        self.line_start = True
+
+    def write(self, text):
+        for part in text.splitlines(keepends=True):
+            if self.line_start:
+                self.logfile.write(f'[{local_timestamp()}] ')
+            self.logfile.write(part)
+            self.line_start = part.endswith('\n')
+        return len(text)
+
+    def flush(self):
+        self.logfile.flush()
+
+
+class TeeOutput:
+    def __init__(self, console, logfile):
+        self.console = console
+        self.logfile = logfile
+
+    def write(self, text):
+        self.logfile.write(text)
+        self.logfile.flush()
+        self.console.write(text)
+        self.console.flush()
+        return len(text)
+
+    def flush(self):
+        self.logfile.flush()
+        self.console.flush()
+
+
+@contextlib.contextmanager
+def text_log(logfile, arguments):
+    timestamp = local_timestamp
+    timestamped_log = TimestampedLog(logfile)
+    with contextlib.redirect_stdout(TeeOutput(sys.stdout, timestamped_log)), contextlib.redirect_stderr(TeeOutput(sys.stderr, timestamped_log)):
+        print(f'\n=== START {timestamp()} ===')
+        print('ARGUMENTS: ' + json.dumps(arguments, ensure_ascii=False))
+        try:
+            yield
+        except BaseException as exc:
+            print(f'=== END {timestamp()} | FAILED: {type(exc).__name__}: {exc} ===', file=sys.stderr)
+            raise
+        else:
+            print(f'=== END {timestamp()} ===')
+
+
+class FontDiagnosticHandler(logging.Handler):
+    def __init__(self, path):
+        super().__init__(logging.WARNING)
+        self.path = path
+
+    def emit(self, record):
+        print(f'{record.levelname} (fontTools): {record.getMessage()}\n  FILE: {self.path}',
+              file=sys.stderr, flush=True)
+
+
+@contextlib.contextmanager
+def font_diagnostics(path):
+    """Attach the current font to library diagnostics without duplicate output."""
+    logger = logging.getLogger('fontTools')
+    previous = (logger.handlers[:], logger.level, logger.propagate)
+    handler = FontDiagnosticHandler(path)
+    logger.handlers = [handler]
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.handlers, logger.level, logger.propagate = previous
+        handler.close()
 
 
 def strip_leading_manicule(name):
@@ -37,8 +124,115 @@ def strip_leading_manicule(name):
     return stripped if changed and stripped else name
 
 
+def ambiguous_legacy_name(record, records):
+    """Do not edit mislabeled Mac Roman bytes alongside native Unicode names."""
+    if record.platformID != 1 or record.platEncID != 0 or not any(byte >= 128 for byte in record.toBytes()):
+        return False
+    for other in records:
+        if other.platformID == 1 or other.nameID != record.nameID:
+            continue
+        try:
+            text = other.toUnicode()
+        except (UnicodeError, LookupError):
+            continue
+        if any(ord(char) > 0x02FF for char in text):
+            return True
+    return False
+
+
+def empty_name_padding(font):
+    """Identify redundant zero padding in a fully valid format-0 name table."""
+    if font.reader is None or 'name' not in font.reader:
+        return None
+    raw = font.reader['name']
+    if len(raw) < 6:
+        return None
+    version, count, offset = struct.unpack('>HHH', raw[:6])
+    expected = 6 + count * 12
+    if version != 0 or not expected < offset <= len(raw) or any(raw[expected:offset]):
+        return None
+    for index in range(count):
+        length, start = struct.unpack_from('>HH', raw, 6 + index * 12 + 8)
+        if offset + start + length > len(raw):
+            return None
+    return offset, expected
+
+
+def usable_style(value):
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', strip_leading_manicule(value))
+    value = re.sub(r'\s+', ' ', value).strip(' .')
+    return value if any(char.isalnum() for char in value) and value.casefold() != 'unknown' else None
+
+
+def recover_style(font, record):
+    # Same ID preserves the distinction between legacy and typographic styles.
+    for language in (record.langID, 0x0409, 0):
+        candidates = {}
+        for other in font['name'].names:
+            if other is record or other.nameID != record.nameID or other.langID != language:
+                continue
+            if ambiguous_legacy_name(other, font['name'].names):
+                continue
+            try:
+                value = usable_style(other.toUnicode())
+            except (UnicodeError, LookupError):
+                continue
+            if value:
+                candidates[value.casefold()] = value
+        if len(candidates) == 1:
+            return next(iter(candidates.values())), 'valid matching style record'
+        if len(candidates) > 1:
+            return 'Unknown', 'conflicting style records'
+    if 'fvar' in font:
+        return 'Unknown', 'variable font requires explicit style evidence'
+    if 'OS/2' not in font or 'head' not in font:
+        return 'Unknown', 'missing style metadata'
+    os2, head = font['OS/2'], font['head']
+    bold = bool(os2.fsSelection & 32)
+    italic = bool(os2.fsSelection & (1 | 512))
+    if (bold != bool(head.macStyle & 1) or italic != bool(head.macStyle & 2)
+            or (os2.fsSelection & 64 and (bold or italic))):
+        return 'Unknown', 'conflicting OS/2 and head style flags'
+    if record.nameID == 2:
+        value = ('Bold Italic' if italic else 'Bold') if bold else ('Italic' if italic else 'Regular')
+        return value, 'consistent OS/2 and head legacy style flags'
+    weights = {100: 'Thin', 200: 'ExtraLight', 300: 'Light', 400: 'Regular',
+               500: 'Medium', 600: 'SemiBold', 700: 'Bold', 800: 'ExtraBold', 900: 'Black'}
+    widths = {1: 'UltraCondensed', 2: 'ExtraCondensed', 3: 'Condensed', 4: 'SemiCondensed',
+              5: '', 6: 'SemiExpanded', 7: 'Expanded', 8: 'ExtraExpanded', 9: 'UltraExpanded'}
+    weight, width = os2.usWeightClass, os2.usWidthClass
+    if weight not in weights or width not in widths or (bold and weight < 700):
+        return 'Unknown', 'missing or conflicting weight/width metadata'
+    # Recognizable full/PostScript suffixes must agree with the numeric weight.
+    suffix_weights = {'Thin': 100, 'ExtraLight': 200, 'UltraLight': 200, 'Light': 300,
+                      'Regular': 400, 'Normal': 400, 'Medium': 500, 'SemiBold': 600,
+                      'DemiBold': 600, 'Bold': 700, 'ExtraBold': 800, 'UltraBold': 800,
+                      'Black': 900, 'Heavy': 900}
+    tokens = sorted(suffix_weights, key=len, reverse=True)
+    pattern = r'(' + '|'.join(tokens) + r')(Italic|Oblique)?$'
+    for other in font['name'].names:
+        if other.nameID not in {4, 6} or ambiguous_legacy_name(other, font['name'].names):
+            continue
+        try:
+            name = re.sub(r'[\s_-]', '', other.toUnicode())
+        except (UnicodeError, LookupError):
+            continue
+        match = re.search(pattern, name, re.IGNORECASE)
+        if match:
+            token = next(token for token in tokens if token.casefold() == match.group(1).casefold())
+            if suffix_weights[token] != weight or bool(match.group(2)) != italic:
+                return 'Unknown', 'name suffix conflicts with numeric style metadata'
+    parts = [widths[width], weights[weight]]
+    if italic:
+        if parts[-1] == 'Regular':
+            parts.pop()
+        parts.append('Oblique' if os2.fsSelection & 512 else 'Italic')
+    return ' '.join(part for part in parts if part), 'consistent weight, width and style metadata'
+
+
 def normalize_internal_names(font):
     """Clean display names, preserving technical IDs and localized encodings."""
+    padding = empty_name_padding(font)
     changes = []
     usable_ids = set()
     for record in font['name'].names:
@@ -54,14 +248,26 @@ def normalize_internal_names(font):
         try:
             original = record.toUnicode()
         except (UnicodeError, LookupError):
-            print(f'WARNING: undecodable internal name record {record.nameID} preserved', file=sys.stderr)
+            logging.getLogger('fontTools').warning('Undecodable internal name record %s preserved', record.nameID)
+            continue
+        if ambiguous_legacy_name(record, font['name'].names):
+            logging.getLogger('fontTools').warning(
+                'Ambiguous legacy name encoding preserved: nameID=%s platform=%s encoding=%s language=0x%04X',
+                record.nameID, record.platformID, record.platEncID, record.langID)
             continue
         if not original.strip():
             continue  # Optional fields may legitimately be empty.
         marker_only_style = record.nameID in {2, 17, 22} and original.strip() == '☞'
         cleaned = '' if marker_only_style else re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', strip_leading_manicule(original))
         cleaned = re.sub(r'\s+', ' ', cleaned).strip(' .')
-        if not cleaned and not marker_only_style:
+        if record.nameID in {2, 17, 22} and cleaned.casefold() != 'unknown' and not usable_style(cleaned):
+            cleaned, reason = recover_style(font, record)
+            try:
+                cleaned.encode(record.getEncoding())
+            except (UnicodeError, LookupError):
+                cleaned, reason = 'Unknown', 'recovered style cannot be encoded in this record'
+            print(f'STYLE RECOVERY: NAME ID {record.nameID}: {original!r} -> {cleaned!r}; {reason}')
+        if not cleaned:
             if record.nameID in usable_ids:
                 # Preserve a broken localized record when another name is usable.
                 continue
@@ -72,6 +278,10 @@ def normalize_internal_names(font):
     for record, _, _, encoded in changes:
         record.string = encoded
     result = [(record.nameID, old, new) for record, old, new, _ in changes]
+    if padding is not None:
+        old, new = padding
+        result.append(('name.layout', f'stringOffset={old}; {old-new} zero padding bytes',
+                       f'stringOffset={new}; no padding'))
     if 'CFF ' in font:
         for top in font['CFF '].cff.topDictIndex:
             for field in ('FamilyName', 'FullName'):
@@ -84,21 +294,28 @@ def normalize_internal_names(font):
     return result
 
 
+def backup_path(path):
+    return path.parent / 'BAK' / (path.name + '.original.bak')
+
+
 def normalize_retained_names(renamer):
     """Run after deduplication so only original byte identity removes files."""
     count = 0
     for ref in list(renamer.reserved.values()):
+        if renamer.should_cancel():
+            break
         if ref.path.suffix.lower() not in {'.ttf', '.otf'}:
             continue
         try:
             original = ref.read()
-            with TTFont(io.BytesIO(original), recalcTimestamp=False) as font:
+            with font_diagnostics(ref.path), TTFont(io.BytesIO(original), recalcTimestamp=False) as font:
                 changes = normalize_internal_names(font)
                 if not changes:
                     continue
                 print(f'INTERNAL:\n  FILE: {ref.path.name}\n  FOLDER: {ref.path.parent}')
                 for name_id, old, new in changes:
-                    print(f'  NAME ID {name_id}:\n    CURRENT: {old!r}\n    NEW: {new!r}')
+                    label = f'NAME ID {name_id}' if isinstance(name_id, int) else f'TABLE {name_id}'
+                    print(f'  {label}:\n    CURRENT: {old!r}\n    NEW: {new!r}')
                 if renamer.apply:
                     # Editing metadata invalidates an existing digital signature.
                     if 'DSIG' in font:
@@ -110,11 +327,15 @@ def normalize_retained_names(renamer):
                     with TTFont(io.BytesIO(updated)) as check:
                         if normalize_internal_names(check):
                             raise RuntimeError('Internal normalization did not round-trip')
-                    backup = ref.path.with_name(ref.path.name + '.original.bak')
-                    if backup.exists():
+                    backup = backup_path(ref.path)
+                    legacy_backup = ref.path.with_name(ref.path.name + '.original.bak')
+                    if backup.parent.is_symlink():
+                        raise ValueError(f'Backup folder is a symlink: {backup.parent}')
+                    if backup.exists() or backup.is_symlink() or legacy_backup.exists() or legacy_backup.is_symlink():
                         raise FileExistsError(f'Backup already exists; source kept: {backup}')
                     if ref.path.read_bytes() != original:
                         raise RuntimeError('Source changed; normalization skipped')
+                    backup.parent.mkdir(exist_ok=True)
                     with backup.open('xb') as output:
                         output.write(original)
                     temp_path = None
@@ -302,15 +523,24 @@ class Retained:
 
 
 class Renamer:
-    def __init__(self, apply=False, keep_duplicates=False, transliterate=True):
+    def __init__(self, apply=False, keep_duplicates=False, transliterate=True, cancel_requested=None):
+        self.cancel_requested = cancel_requested
+        self.cancelled = False
         self.apply = apply
         self.keep_duplicates = keep_duplicates
         self.transliterate = transliterate
         self.seen = {}
         self.reserved = {}
         self.metadata = {}
-        self.normalized_origins = {}
+        self.normalized_origins = OrderedDict()
+        self.normalized_origin_bytes = 0
         self.changed = self.duplicates = self.errors = 0
+
+    def should_cancel(self):
+        if self.cancelled or (self.cancel_requested is not None and self.cancel_requested()):
+            self.cancelled = True
+            return True
+        return False
 
     def key(self, path):
         return os.path.normcase(str(path))
@@ -328,20 +558,33 @@ class Renamer:
         return None
 
     def original_before_normalization(self, path, data):
-        """Trust a backup only if normalizing it reproduces the current bytes."""
+        """Trust validated backups; bound caching instead of retaining the collection."""
         key = (self.key(path), hashlib.sha256(data).digest())
-        if key not in self.normalized_origins:
-            original = data
-            backup = path.with_name(path.name + '.original.bak')
-            if backup.is_file() and not backup.is_symlink():
+        if key in self.normalized_origins:
+            original = self.normalized_origins[key]
+            self.normalized_origins.move_to_end(key)
+            return data if original is None else original
+        original = None
+        for backup in (backup_path(path), path.with_name(path.name + '.original.bak')):
+            if backup.is_file() and not backup.is_symlink() and not backup.parent.is_symlink():
                 try:
                     candidate = backup.read_bytes()
                     if normalized_bytes(candidate) == data:
                         original = candidate
+                        break
                 except Exception:
                     pass
+        # No backup: retain only a sentinel, never the input font's bytes.
+        size = len(original) if original is not None else 0
+        limit = 16 * 1024 * 1024
+        if size <= limit:
+            while self.normalized_origins and (len(self.normalized_origins) >= 64
+                                               or self.normalized_origin_bytes + size > limit):
+                _, evicted = self.normalized_origins.popitem(last=False)
+                self.normalized_origin_bytes -= len(evicted) if evicted is not None else 0
             self.normalized_origins[key] = original
-        return self.normalized_origins[key]
+            self.normalized_origin_bytes += size
+        return data if original is None else original
 
     def destination(self, source, stem, extension, data, identity_data=None, extraction=False):
         number = 1
@@ -442,6 +685,8 @@ class Renamer:
             return
         with TTCollection(io.BytesIO(collection_data), recalcTimestamp=False) as collection:
             for index, font in enumerate(collection.fonts):
+                if self.should_cancel():
+                    break
                 try:
                     self.extract_member(source, font)
                 except Exception as exc:
@@ -473,11 +718,14 @@ class Renamer:
 
     def process(self, paths):
         for source in paths:
+            if self.should_cancel():
+                break
             try:
-                if source.suffix.lower() in {'.ttc', '.otc'}:
-                    self.unpack_collection(source)
-                else:
-                    self.rename_font(source)
+                with font_diagnostics(source):
+                    if source.suffix.lower() in {'.ttc', '.otc'}:
+                        self.unpack_collection(source)
+                    else:
+                        self.rename_font(source)
             except Exception as exc:
                 self.errors += 1
                 print(f'ERROR (kept): {source}: {exc}')
@@ -492,7 +740,7 @@ def collect_files(paths):
         for candidate in candidates:
             if (candidate.is_file() and not candidate.is_symlink()
                     and candidate.suffix.lower() in FONT_SUFFIXES
-                    and not any(part.startswith('.') for part in candidate.parts)):
+                    and not any(part.startswith('.') or part.casefold() == 'bak' for part in candidate.parts)):
                 files.add(candidate.resolve())
     # Snapshot before mutation; extraction and renames do not affect traversal.
     return sorted(files, key=lambda path: str(path).casefold())
@@ -509,21 +757,47 @@ def main(argv=None):
     parser.add_argument('--keep-duplicates', action='store_true', help='Keep byte-identical duplicates with numbered filenames')
     parser.add_argument('--no-transliterate', action='store_true', help='Use only the original internal name')
     parser.add_argument('--dry-run', action='store_true', help='Explicit preview; cannot be combined with --apply')
-    parser.add_argument('--normalize-internal', action='store_true', help='Also clean internal display names; --apply creates .original.bak backups')
+    parser.add_argument('--normalize-internal', action='store_true', help='Also clean internal display names; --apply creates backups in a BAK subfolder')
+    parser.add_argument('--log', nargs='?', type=Path,
+                        const=Path(f'font_renamer[{datetime.now().astimezone().date().isoformat()}].log'),
+                        metavar='PATH',
+                        help='Append all output to a UTF-8 log; without PATH use font_renamer[YYYY-MM-DD].log in the current folder')
+    parser.add_argument('--cancel-file', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.apply and args.dry_run:
         parser.error('--apply and --dry-run cannot be combined')
+    if args.log is not None:
+        if args.log.suffix.lower() in FONT_SUFFIXES or args.log.name.lower().endswith('.original.bak') or args.log.is_symlink():
+            parser.error('--log must not point to a font, normalization backup or symlink')
+        if any(same_path(args.log, path) for path in args.files):
+            parser.error('--log must differ from the input paths')
+        try:
+            logfile = args.log.open('a', encoding='utf-8')
+        except OSError as exc:
+            parser.error(f'Cannot open log; no fonts changed: {exc}')
+        with logfile, text_log(logfile, list(argv) if argv is not None else sys.argv[1:]):
+            result = run_command(args, parser)
+            print(f'EXIT STATUS: {result}')
+            return result
+    return run_command(args, parser)
+
+
+def run_command(args, parser):
     try:
         files = collect_files(args.files)
     except OSError as exc:
         parser.error(str(exc))
-    renamer = Renamer(args.apply, args.keep_duplicates, not args.no_transliterate)
+    cancel_requested = args.cancel_file.exists if args.cancel_file is not None else None
+    renamer = Renamer(args.apply, args.keep_duplicates, not args.no_transliterate, cancel_requested)
     print('APPLY' if args.apply else 'PREVIEW: no files will be changed. Use --apply to apply.')
     renamer.process(files)
-    if args.normalize_internal:
+    if args.normalize_internal and not renamer.should_cancel():
         normalized = normalize_retained_names(renamer)
         print(f'{normalized} fonts with internal name changes.')
     print(f'{renamer.changed} changes, {renamer.duplicates} byte-identical duplicates, {renamer.errors} errors.')
+    if renamer.cancelled:
+        print('CANCELLED: stopped between fonts; completed changes remain.')
+        return 130
     return 1 if renamer.errors else 0
 
 

@@ -9,7 +9,7 @@ This MIT-licensed fork extends [i-defranca/font-rename-fm](https://github.com/i-
 Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-fm/releases), then install it:
 
 ```console
-python -m pip install ./font_rename_fm-0.2.10-py3-none-any.whl
+python -m pip install ./font_rename_fm-0.3.0-py3-none-any.whl
 ```
 
 Alternatively, install this repository checkout with `python -m pip install .`.
@@ -31,6 +31,14 @@ python -m font_rename_fm.rename "C:\Fonts" --apply
 
 Test on a copy first. `--apply` can rename files, extract collection members and delete exact duplicates. Run while the input folders are otherwise idle. There is no general undo function; internal normalization has per-font backups, but ordinary renames and duplicate removal do not.
 
+## Text log
+
+```console
+python -m font_rename_fm.rename "C:\Fonts" --normalize-internal --apply --log
+```
+
+Use `--log` without a path for `font_renamer[YYYY-MM-DD].log` in the current working folder (local date), or `--log "C:\Fonts\rename.log"` for a custom path. Both append the complete output to a UTF-8 file while keeping console output. Every log line includes the running PC's local date/time and milliseconds, without a timezone label, including FontTools diagnostics. Sessions also include start/end markers, arguments and exit status. Console output keeps its original format. Existing contents are preserved; the parent folder must exist. If the log cannot be opened, processing stops before font changes. Preview may write the requested log but leaves fonts unchanged.
+
 ## Behavior
 
 - Recursively processes TTF, OTF, TTC and OTC files. Symlinks and hidden paths beginning with `.` are skipped.
@@ -41,6 +49,7 @@ Test on a copy first. `--apply` can rename files, extract collection members and
 - Different contents sharing a name are preserved. Differing style, version, manufacturer, weight, width, PostScript name or unique identifier can be added in brackets. Up to two descriptive fields are combined; a 12-digit SHA-256 prefix is the fallback. Numbers are a final fallback for retained identical copies or occupied destinations. The first retained font keeps the plain name.
 - Names are limited to 180 UTF-16 units and 235 UTF-8 bytes before the extension, reserving space for backups on filesystems with a 255-byte filename limit. This bounds the filename, not the full path length.
 - Extracts TTC/OTC members and retains an original collection. Byte-identical collections can be consolidated. A member without a usable name does not block other members when the collection can be opened.
+- FontTools warnings and errors include the full path of the font being processed, including internal-name normalization and collections.
 - Keeps unreadable or unusable fonts and reports errors while continuing with other inputs. A nonzero exit status means at least one operation was skipped or failed; it does not roll back earlier successful operations.
 
 The tool does not consult web catalogs, infer canonical commercial names, move families between alphabetical folders, or automatically correct extensions from the font's outline format. WOFF/WOFF2, FOT, FON/FNT and Type 1 PFB/PFM files are outside its current processing scope. A FOT file may refer to a TTF's old filename.
@@ -52,21 +61,22 @@ python -m font_rename_fm.rename "C:\Fonts" --normalize-internal
 python -m font_rename_fm.rename "C:\Fonts" --normalize-internal --apply
 ```
 
-Normalizes display family, style and full-name records: whitespace, forbidden filename characters and leading `☞` markers. A style containing only `☞` becomes empty. Also removes leading markers from CFF `FamilyName` and `FullName`, including the UTF-8 marker exposed as Latin-1 text. Technical PostScript and unique identifiers are preserved.
+Compacts redundant zero padding in validated format-0 name tables; gaps containing nonzero data are preserved. Normalizes display family, style and full-name records: whitespace, forbidden filename characters and leading `☞` markers. Unusable nonempty style fields (including `?` or marker-only values) are recovered from matching style records or coherent OS/2/head metadata. Legacy ID 2 stays distinct from typographic IDs 17/22. Conflicting or insufficient evidence yields `Unknown`, a tool-defined placeholder, and each decision is logged. Legitimately empty optional fields remain empty. Also removes leading markers from CFF `FamilyName` and `FullName`, including the UTF-8 marker exposed as Latin-1 text. Technical PostScript and unique identifiers are preserved.
 
-Each edited font receives a sibling `filename.ttf.original.bak` or `filename.otf.original.bak`. Existing backups are never overwritten. Unreadable localized records are kept; an operation that would leave a nonempty display name empty is rejected. The edits change font bytes and remove an invalidated DSIG signature. They do not harmonize contradictory commercial names. Extracted members can be normalized; the original TTC/OTC metadata stays unchanged.
+Each edited font receives a backup in the sibling `BAK` subfolder: `BAK/filename.ttf.original.bak` or `BAK/filename.otf.original.bak`. `BAK` folders are excluded from font processing. Legacy backups beside fonts remain recognized for provenance and overwrite protection. Existing backups are never overwritten. Unreadable localized records are kept. High-byte Mac Roman records alongside native Unicode names are conservatively preserved and reported as ambiguous, since forbidden-looking characters may be bytes of multibyte text; an operation that would leave a nonempty display name empty is rejected. The edits change font bytes and remove an invalidated DSIG signature. They do not harmonize contradictory commercial names. Extracted members can be normalized; the original TTC/OTC metadata stays unchanged.
 
-Deduplication runs before normalization. A backup is trusted as provenance only when normalizing it reproduces the current font bytes exactly. This keeps collision hashes stable and recognizes previously extracted, normalized collection members on repeat runs. It never authorizes deleting files with different bytes.
+Deduplication runs before normalization. A backup is trusted as provenance only when normalizing it reproduces the current font bytes exactly. Provenance caching is limited to 64 entries and 16 MiB of validated backup bytes; ordinary font contents are not retained in that cache. This keeps collision hashes stable and recognizes previously extracted, normalized collection members on repeat runs. It never authorizes deleting files with different bytes.
 
 ## Options
 
 | Option | Effect |
 | --- | --- |
+| `--log [PATH]` | Append all output to a UTF-8 log and keep console output. Without PATH, use a dated filename in the current folder. |
 | `--apply` | Apply file operations and optional normalization. |
 | `--dry-run` | Explicit preview; incompatible with `--apply`. |
 | `--keep-duplicates` | Keep exact copies too, with distinct filenames. |
 | `--no-transliterate` | Use only the original internal name. |
-| `--normalize-internal` | Also clean internal display names; applying creates backups. |
+| `--normalize-internal` | Also clean internal display names; applying creates backups in a `BAK` subfolder. |
 
 ## Tests
 
@@ -74,7 +84,7 @@ Deduplication runs before normalization. A backup is trusted as provenance only 
 python -m unittest discover -v
 ```
 
-44 tests generate their own fonts. Coverage includes preview immutability, binary duplicates, collision metadata, changed inputs, variable fonts, multilingual and malformed name records, Windows naming rules, normalized repeat runs, TTC members, unrelated/existing backups, CFF markers and long bilingual filenames. Locally tested with Python 3.14.8 on Windows; GitHub Actions is configured for Windows and Linux with Python 3.12, 3.13 and 3.14. A configured matrix is not a claim that every remote job has already passed.
+69 tests generate their own fonts. Coverage includes preview immutability, binary duplicates, collision metadata, changed inputs, variable fonts, multilingual and malformed name records, Windows naming rules, normalized repeat runs, TTC members, unrelated/existing backups, CFF markers and long bilingual filenames. Locally tested with Python 3.14.8 on Windows; GitHub Actions is configured for Windows and Linux with Python 3.12, 3.13 and 3.14. A configured matrix is not a claim that every remote job has already passed.
 
 No user font collection or private test logs are included in the repository or release assets.
 

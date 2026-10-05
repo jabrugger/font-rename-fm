@@ -1,5 +1,8 @@
 import contextlib
 import io
+import logging
+import os
+import struct
 import shutil
 import tempfile
 import unittest
@@ -47,6 +50,356 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(engine.errors, 0, self.log.getvalue())
         return engine
 
+    def test_malformed_name_warning_identifies_source(self):
+        path = self.folder / 'malformed.ttf'
+        make_font(path)
+        data = bytearray(path.read_bytes())
+        with TTFont(path, lazy=True) as font:
+            offset = font.reader.tables['name'].offset
+        # Corrupt the first record's string length; other names remain usable.
+        struct.pack_into('>H', data, offset + 6 + 8, 65535)
+        path.write_bytes(data)
+        errors = io.StringIO()
+        logger = logging.getLogger('fontTools')
+        previous = (logger.handlers[:], logger.level, logger.propagate)
+        with contextlib.redirect_stderr(errors):
+            engine = self.run_renamer(apply=False)
+        self.assertEqual(engine.errors, 0)
+        self.assertIn('skipping malformed name record #0', errors.getvalue())
+        self.assertIn(f'FILE: {path}', errors.getvalue())
+        self.assertEqual(errors.getvalue().count('skipping malformed name record #0'), 1)
+        self.assertEqual((logger.handlers, logger.level, logger.propagate), previous)
+        self.assertEqual(path.read_bytes(), bytes(data))
+
+    def test_normalization_warning_identifies_retained_font(self):
+        path = self.folder / 'Test Regular.ttf'
+        make_font(path)
+        engine = self.run_renamer(apply=False)
+        errors = io.StringIO()
+        def diagnostic(font):
+            logging.getLogger('fontTools.ttLib.tables._n_a_m_e').warning('Name diagnostic')
+            return []
+        with contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.normalize_internal_names', side_effect=diagnostic):
+            normalize_retained_names(engine)
+        self.assertIn('Name diagnostic', errors.getvalue())
+        self.assertIn(f'FILE: {path}', errors.getvalue())
+
+    def test_log_captures_unicode_console_and_diagnostics_and_appends(self):
+        path = self.folder / 'source.ttf'
+        make_font(path, '黑体')
+        logfile = self.folder / 'session.log'
+        logfile.write_text('PREVIOUS SESSION\n', encoding='utf-8')
+        errors = io.StringIO()
+        from font_rename_fm.rename import get_font_name as original_name
+        def diagnostic(font):
+            logging.getLogger('fontTools.ttLib').warning('Diagnostic 中文')
+            return original_name(font)
+        before = path.read_bytes()
+        with contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.get_font_name', side_effect=diagnostic):
+            self.assertEqual(main([str(path), '--log', str(logfile)]), 0)
+        log = logfile.read_text(encoding='utf-8')
+        self.assertTrue(log.startswith('PREVIOUS SESSION\n'))
+        for expected in ('=== START ', '=== END ', 'RENAME:', '黑体', 'Diagnostic 中文', f'FILE: {path}', 'EXIT STATUS: 0'):
+            self.assertIn(expected, log)
+        self.assertIn('Diagnostic 中文', errors.getvalue())
+        self.assertIn('RENAME:', self.log.getvalue())
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(main([str(path), '--log', str(logfile)]), 0)
+        self.assertEqual(logfile.read_text(encoding='utf-8').count('=== START '), 2)
+
+    def test_unwritable_log_stops_before_font_changes(self):
+        path = self.folder / 'source.ttf'
+        make_font(path)
+        before = path.read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main([str(path), '--apply', '--log', str(self.folder/'absent'/'session.log')])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((self.folder/'Test Regular.ttf').exists())
+
+    def test_log_rejects_font_path_without_modifying_it(self):
+        path = self.folder / 'source.ttf'
+        make_font(path)
+        before = path.read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main([str(path), '--apply', '--log', str(path)])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_log_records_input_errors_and_closes_session(self):
+        logfile = self.folder / 'session.log'
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main([str(self.folder/'absent'), '--log', str(logfile)])
+        log = logfile.read_text(encoding='utf-8')
+        self.assertIn('error:', log)
+        self.assertIn('=== END ', log)
+        self.assertIn('FAILED: SystemExit', log)
+
+    def test_backup_folder_is_skipped_even_with_font_extensions(self):
+        make_font(self.folder / 'source.ttf')
+        folder = self.folder / 'bak'
+        folder.mkdir()
+        make_font(folder / 'original.ttf')
+        self.assertEqual(collect_files([self.folder]), [(self.folder / 'source.ttf').resolve()])
+        self.assertEqual(collect_files([folder]), [])
+
+    def test_existing_backup_in_bak_blocks_normalization(self):
+        path = self.folder / 'Test.ttf'
+        make_font(path, ' *Test ')
+        original = path.read_bytes()
+        folder = self.folder / 'BAK'
+        folder.mkdir()
+        backup = folder / 'Test.ttf.original.bak'
+        backup.write_bytes(b'previous backup')
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine), 0)
+        self.assertEqual(engine.errors, 1)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(backup.read_bytes(), b'previous backup')
+
+    def test_log_without_path_uses_dated_file_in_current_folder(self):
+        from datetime import datetime
+        path = self.folder / 'source.ttf'
+        make_font(path)
+        old_directory = Path.cwd()
+        try:
+            os.chdir(self.folder)
+            expected = self.folder / f'font_renamer[{datetime.now().astimezone().date().isoformat()}].log'
+            self.assertEqual(main([str(path), '--log']), 0)
+            self.assertTrue(expected.is_file())
+            self.assertIn('RENAME:', expected.read_text(encoding='utf-8'))
+            self.assertEqual(main([str(path), '--log']), 0)
+            self.assertEqual(expected.read_text(encoding='utf-8').count('=== START '), 2)
+        finally:
+            os.chdir(old_directory)
+
+    def test_omitting_log_does_not_create_logfile(self):
+        path = self.folder / 'source.ttf'
+        make_font(path)
+        old_directory = Path.cwd()
+        try:
+            os.chdir(self.folder)
+            self.assertEqual(main([str(path)]), 0)
+            self.assertEqual(list(self.folder.glob('*.log')), [])
+        finally:
+            os.chdir(old_directory)
+
+    def test_log_timestamps_every_line_with_fragmented_writes(self):
+        from font_rename_fm.rename import text_log
+        logfile, console, errors = io.StringIO(), io.StringIO(), io.StringIO()
+        stamp = '2026-10-05 15:23:04.123'
+        with contextlib.redirect_stdout(console), contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.local_timestamp', return_value=stamp):
+            with text_log(logfile, ['--log']):
+                print('RENAME:\n  CURRENT: old.ttf\n  NEW: new.ttf')
+                print('WARNING: malformed name', file=__import__('sys').stderr)
+                print('fragment', end='')
+                print('ed line')
+        lines = logfile.getvalue().splitlines()
+        self.assertTrue(all(line.startswith(f'[{stamp}] ') for line in lines))
+        self.assertIn(f'[{stamp}] fragmented line', lines)
+        self.assertIn(f'[{stamp}] WARNING: malformed name', lines)
+        self.assertIn(f'[{stamp}]   NEW: new.ttf', lines)
+        self.assertNotIn(f'[{stamp}]', console.getvalue())
+        self.assertEqual(errors.getvalue(), 'WARNING: malformed name\n')
+
+    def test_timestamp_uses_machine_local_time_without_timezone_label(self):
+        from datetime import datetime
+        from font_rename_fm.rename import local_timestamp
+        local = datetime(2026, 10, 5, 9, 12, 34, 567000)
+        with patch('font_rename_fm.rename.datetime') as clock:
+            clock.now.return_value = local
+            self.assertEqual(local_timestamp(), '2026-10-05 09:12:34.567')
+            clock.now.assert_called_once_with()
+
+    def test_mislabeled_japanese_mac_bytes_preserved(self):
+        from fontTools.ttLib.tables._n_a_m_e import NameRecord
+        path = self.folder / 'japanese.ttf'
+        make_font(path, 'Japanese')
+        native = 'ＦＡ ポップＢ'
+        raw = native.encode('shift_jis')
+        with TTFont(path, recalcTimestamp=False) as font:
+            font['name'].names = []
+            for name_id in (1, 4):
+                record = NameRecord()
+                record.nameID, record.platformID, record.platEncID, record.langID = name_id, 1, 0, 11
+                record.string = raw
+                font['name'].names.append(record)
+                font['name'].setName(native, name_id, 3, 1, 0x0411)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(normalize_internal_names(font), [])
+            stream = io.BytesIO()
+            font.save(stream)
+        with TTFont(io.BytesIO(stream.getvalue())) as font:
+            for record in font['name'].names:
+                if record.platformID == 1:
+                    self.assertEqual(record.toBytes(), raw)
+                    self.assertEqual(record.toBytes().decode('shift_jis'), native)
+
+    def padded_name_font(self, padding=b'\x00' * 168):
+        from fontTools.ttLib.tables.DefaultTable import DefaultTable
+        path = self.folder / 'Test.ttf'
+        make_font(path, 'Test')
+        with TTFont(path, recalcTimestamp=False) as font:
+            raw = font.getTableData('name')
+            version, count, offset = struct.unpack('>HHH', raw[:6])
+            table = DefaultTable('name')
+            table.data = struct.pack('>HHH', version, count, offset + len(padding)) + raw[6:offset] + padding + raw[offset:]
+            font['name'] = table
+            font.save(path)
+        return path
+
+    def test_zero_name_padding_compacted_with_backup_and_unchanged_font_data(self):
+        path = self.padded_name_font()
+        original = path.read_bytes()
+        with TTFont(path) as font:
+            names = [(n.nameID, n.platformID, n.platEncID, n.langID, n.toBytes()) for n in font['name'].names]
+            tables = {tag: font.getTableData(tag) for tag in font.keys() if tag not in {'GlyphOrder', 'head', 'name', 'DSIG'}}
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine), 1)
+        self.assertEqual((self.folder/'BAK'/'Test.ttf.original.bak').read_bytes(), original)
+        with TTFont(path) as font:
+            version, count, offset = struct.unpack('>HHH', font.reader['name'][:6])
+            self.assertEqual(offset, 6 + 12 * count)
+            self.assertEqual([(n.nameID, n.platformID, n.platEncID, n.langID, n.toBytes()) for n in font['name'].names], names)
+            for tag, data in tables.items():
+                self.assertEqual(font.getTableData(tag), data)
+        self.assertEqual(normalize_retained_names(self.run_renamer()), 0)
+
+    def test_nonzero_name_gap_preserved(self):
+        path = self.padded_name_font(b'unknown extra data')
+        original = path.read_bytes()
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine), 0)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.folder/'BAK').exists())
+
+    def test_padding_compaction_preview_does_not_modify_font(self):
+        path = self.padded_name_font()
+        original = path.read_bytes()
+        engine = self.run_renamer(apply=False)
+        self.assertEqual(normalize_retained_names(engine), 1)
+        self.assertIn('TABLE name.layout', self.log.getvalue())
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.folder/'BAK').exists())
+
+    def broken_styles(self, path, ids=(2, 17)):
+        font = TTFont(path, recalcTimestamp=False)
+        font['name'].names = [r for r in font['name'].names if r.nameID not in ids]
+        for name_id in ids:
+            font['name'].setName('?', name_id, 3, 1, 0x0409)
+        return font
+
+    def test_unknown_style_recovers_valid_matching_record(self):
+        path = self.folder/'Test.ttf'
+        make_font(path)
+        with self.broken_styles(path) as font:
+            font['name'].setName('Bold', 2, 1, 0, 0)
+            normalize_internal_names(font)
+            self.assertEqual(font['name'].getName(2, 3, 1, 0x0409).toUnicode(), 'Bold')
+
+    def test_unknown_styles_recover_consistent_bold_italic_metadata(self):
+        path = self.folder/'Test.ttf'
+        make_font(path, 'Test Bold Italic')
+        with self.broken_styles(path) as font:
+            font['OS/2'].fsSelection = 33
+            font['OS/2'].usWeightClass = 700
+            font['head'].macStyle = 3
+            font['name'].removeNames(nameID=6)
+            font['name'].setName('Test-BoldItalic', 6, 3, 1, 0x0409)
+            normalize_internal_names(font)
+            for name_id in (2, 17):
+                self.assertEqual(font['name'].getName(name_id, 3, 1, 0x0409).toUnicode(), 'Bold Italic')
+            self.assertIn('consistent', self.log.getvalue())
+            self.assertEqual(normalize_internal_names(font), [])
+
+    def test_unknown_style_with_conflicting_flags_uses_unknown(self):
+        path = self.folder/'Test.ttf'
+        make_font(path)
+        with self.broken_styles(path) as font:
+            font['OS/2'].fsSelection = 32
+            font['head'].macStyle = 0
+            normalize_internal_names(font)
+            for name_id in (2, 17):
+                self.assertEqual(font['name'].getName(name_id, 3, 1, 0x0409).toUnicode(), 'Unknown')
+            self.assertEqual(normalize_internal_names(font), [])
+
+    def test_unknown_typographic_style_rejects_conflicting_name_suffix(self):
+        path = self.folder/'Test.ttf'
+        make_font(path, 'Test Light')
+        with self.broken_styles(path) as font:
+            font['OS/2'].fsSelection = 64
+            font['head'].macStyle = 0
+            font['OS/2'].usWeightClass = 400
+            normalize_internal_names(font)
+            self.assertEqual(font['name'].getName(17, 3, 1, 0x0409).toUnicode(), 'Unknown')
+
+    def test_unknown_styles_do_not_block_other_normalization(self):
+        path = self.folder/'Test.ttf'
+        make_font(path, ' *Test ')
+        with self.broken_styles(path) as font:
+            font['OS/2'].fsSelection = 32
+            font['head'].macStyle = 0
+            font.save(path)
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine), 1)
+        self.assertEqual(engine.errors, 0)
+        with TTFont(self.folder/'Test.ttf') as font:
+            self.assertEqual(font['name'].getName(4, 3, 1, 0x0409).toUnicode(), 'Test')
+            self.assertEqual(font['name'].getName(2, 3, 1, 0x0409).toUnicode(), 'Unknown')
+
+    def test_provenance_memory_does_not_grow_with_input_font_bytes(self):
+        import tracemalloc
+        engine = Renamer()
+        was_tracing = tracemalloc.is_tracing()
+        if not was_tracing:
+            tracemalloc.start()
+        baseline = tracemalloc.get_traced_memory()[0]
+        try:
+            # 32 MiB of distinct inputs: retaining each input reproduces the leak.
+            for index in range(128):
+                data = index.to_bytes(4, 'big') * 65536
+                self.assertIs(engine.original_before_normalization(self.folder/f'{index}.ttf', data), data)
+            retained = tracemalloc.get_traced_memory()[0] - baseline
+            self.assertLess(retained, 2 * 1024 * 1024)
+        finally:
+            if not was_tracing:
+                tracemalloc.stop()
+
+    def test_provenance_after_cache_eviction_preserves_normalized_identity(self):
+        path = self.folder/'Test.ttf'
+        make_font(path, ' *Test ')
+        original = path.read_bytes()
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine), 1)
+        target = self.folder/'Test.ttf'
+        normalized = target.read_bytes()
+        self.assertEqual(engine.original_before_normalization(target, normalized), original)
+        for index in range(100):
+            engine.original_before_normalization(self.folder/f'other-{index}.ttf', str(index).encode())
+        self.assertEqual(engine.original_before_normalization(target, normalized), original)
+        self.assertNotEqual(original, normalized)
+
+    def test_cancellation_between_fonts_preserves_remaining_files(self):
+        first, second = self.folder/'a.ttf', self.folder/'b.ttf'
+        make_font(first, 'First')
+        make_font(second, 'Second')
+        original = second.read_bytes()
+        engine = Renamer(apply=True, cancel_requested=lambda: (self.folder/'First.ttf').exists())
+        engine.process([first, second])
+        self.assertTrue(engine.cancelled)
+        self.assertEqual(engine.changed, 1)
+        self.assertEqual(second.read_bytes(), original)
+
+    def test_cli_cancel_file_stops_before_changes_and_records_status(self):
+        source = self.folder/'a.ttf'
+        make_font(source)
+        original = source.read_bytes()
+        cancel = self.folder/'cancel.flag'
+        cancel.touch()
+        log = self.folder/'session.log'
+        self.assertEqual(main([str(source), '--apply', '--normalize-internal', '--cancel-file', str(cancel), '--log', str(log)]), 130)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertIn('CANCELLED', log.read_text(encoding='utf-8'))
+        self.assertIn('EXIT STATUS: 130', log.read_text(encoding='utf-8'))
+
     def test_invalid_windows_chars(self):
         source = self.folder / 'original.ttf'
         make_font(source, '*Antique Olive Bd.C.')
@@ -63,7 +416,7 @@ class RenameTests(unittest.TestCase):
         self.assertTrue(target.exists())
         with TTFont(target) as font:
             self.assertEqual(get_font_name(font), 'Test')
-        self.assertTrue(target.with_name(target.name + '.original.bak').exists())
+        self.assertTrue((target.parent / 'BAK' / (target.name + '.original.bak')).exists())
 
     def test_manicule_inside_name_and_symbol_only_name_preserved(self):
         self.assertEqual(clean_name('Symbol ☞ Font'), 'Symbol ☞ Font')
@@ -81,10 +434,10 @@ class RenameTests(unittest.TestCase):
         engine = self.run_renamer()
         self.assertEqual(normalize_retained_names(engine), 1)
         with TTFont(source) as font:
-            self.assertEqual(font['name'].getName(2, 3, 1, 0x0409).toUnicode(), '')
+            self.assertEqual(font['name'].getName(2, 3, 1, 0x0409).toUnicode(), 'Regular')
             self.assertEqual(get_font_name(font), 'OpenType Test')
             self.assertEqual(font['CFF '].cff.topDictIndex[0].FullName, 'OpenType Test')
-        self.assertEqual(source.with_name(source.name + '.original.bak').read_bytes(), before)
+        self.assertEqual((source.parent / 'BAK' / (source.name + '.original.bak')).read_bytes(), before)
         self.assertEqual(normalize_retained_names(self.run_renamer()), 0)
 
     def test_windows_symbol_name_preferred_over_mac_placeholder(self):
@@ -108,7 +461,7 @@ class RenameTests(unittest.TestCase):
             font.save(source)
         engine = self.run_renamer()
         self.assertTrue((self.folder / 'Babylon5.ttf').exists())
-        self.assertEqual(normalize_retained_names(engine), 0)
+        self.assertEqual(normalize_retained_names(engine), 1)
         self.assertEqual(engine.errors, 0)
 
     def test_empty_optional_style_is_preserved(self):
@@ -141,7 +494,7 @@ class RenameTests(unittest.TestCase):
         engine = self.run_renamer()
         self.assertEqual(normalize_retained_names(engine), 1)
         target = self.folder / 'Test Font.ttf'
-        self.assertEqual((self.folder / 'Test Font.ttf.original.bak').read_bytes(), original)
+        self.assertEqual((self.folder / 'BAK' / 'Test Font.ttf.original.bak').read_bytes(), original)
         with TTFont(target) as font:
             self.assertEqual(get_font_name(font), 'Test Font')
             self.assertEqual(font['name'].getDebugName(6), 'Test-Regular')
@@ -176,10 +529,10 @@ class RenameTests(unittest.TestCase):
         a = self.folder / 'a.ttf'
         make_font(a, '*Test')
         shutil.copyfile(a, self.folder / 'b.ttf')
-        before = {p.name: p.read_bytes() for p in self.folder.iterdir()}
+        before = {str(p.relative_to(self.folder)): p.read_bytes() for p in self.folder.rglob('*') if p.is_file()}
         engine = self.run_renamer(apply=False)
         self.assertEqual(engine.duplicates, 1)
-        self.assertEqual(before, {p.name: p.read_bytes() for p in self.folder.iterdir()})
+        self.assertEqual(before, {str(p.relative_to(self.folder)): p.read_bytes() for p in self.folder.rglob('*') if p.is_file()})
 
     def test_identical_files_leave_one(self):
         a = self.folder / 'a.ttf'
@@ -445,11 +798,11 @@ class RenameTests(unittest.TestCase):
         source.unlink()
         engine = self.run_renamer()
         normalize_retained_names(engine)
-        before = {p.name: p.read_bytes() for p in self.folder.iterdir()}
+        before = {str(p.relative_to(self.folder)): p.read_bytes() for p in self.folder.rglob('*') if p.is_file()}
         repeated = self.run_renamer()
         normalize_retained_names(repeated)
         self.assertEqual(repeated.changed, 0)
-        self.assertEqual(before, {p.name: p.read_bytes() for p in self.folder.iterdir()})
+        self.assertEqual(before, {str(p.relative_to(self.folder)): p.read_bytes() for p in self.folder.rglob('*') if p.is_file()})
 
     def test_collection_bad_member_does_not_block_good_member(self):
         bad = self.folder / 'bad.ttf'
