@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Preserve filesystem modification and access timestamps during internal-name edits, and creation time on Windows.
+- Preserve original timestamps on normalization backups; extracted collection members inherit collection timestamps.
+- Preserve existing internal head timestamps. Abort replacement if timestamp restoration fails.
+- Add four generated-font tests for timestamps and failure protection (73 tests total).
+
 ## 0.3.0
 
 - Add cooperative cancellation checkpoints for the separate desktop GUI. Completed operations remain; the current font operation finishes before stopping.
@@ -41,7 +48,7 @@ First public release of this fork, incorporating the locally tested 0.2.x improv
 - Stable repeat runs after normalization and TTC/OTC extraction.
 - Collection retention and continued extraction after an unusable member.
 - Readable current/new preview output and Unicode-safe Windows output.
-- 44 generated-font tests and a Windows/Linux Python 3.12–3.14 CI matrix.
+- 44 generated-font tests and a Windows/Linux Python 3.12â€“3.14 CI matrix.
 
 ## Upstream 0.1.1
 

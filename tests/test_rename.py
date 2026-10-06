@@ -14,7 +14,7 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTCollection, TTFont
 from font_rename_fm.rename import (Renamer, clean_name, collect_files,
                                   filename_stem, get_font_name, main)
-from font_rename_fm.rename import normalize_internal_names, normalize_retained_names
+from font_rename_fm.rename import normalize_internal_names, normalize_retained_names, FileDates
 
 
 def make_font(path, name='Test Regular', width=500):
@@ -70,6 +70,63 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(errors.getvalue().count('skipping malformed name record #0'), 1)
         self.assertEqual((logger.handlers, logger.level, logger.propagate), previous)
         self.assertEqual(path.read_bytes(), bytes(data))
+
+    def historic_dates(self, path):
+        dates = FileDates(946684800123456700, 978307200765432100,
+                          915148800345678900 if os.name == 'nt' else None)
+        dates.restore(path)
+        return FileDates.capture(path)
+
+    def assert_original_dates(self, path, dates):
+        current = FileDates.capture(path)
+        self.assertEqual(current.modified_ns, dates.modified_ns)
+        self.assertEqual(current.created_ns, dates.created_ns)
+
+    def test_rename_preserves_original_file_dates(self):
+        path = self.folder/'old.ttf'
+        make_font(path)
+        dates = self.historic_dates(path)
+        self.run_renamer()
+        self.assert_original_dates(self.folder/'Test Regular.ttf',dates)
+
+    def test_internal_normalization_preserves_dates_and_backup_dates(self):
+        path = self.folder/'old.ttf'
+        make_font(path, ' Test Regular ')
+        with TTFont(path, recalcTimestamp=False) as font:
+            head_dates = font['head'].created, font['head'].modified
+        dates = self.historic_dates(path)
+        engine = self.run_renamer()
+        self.assertEqual(normalize_retained_names(engine),1)
+        target = self.folder/'Test Regular.ttf'
+        self.assert_original_dates(target,dates)
+        self.assert_original_dates(self.folder/'BAK'/'Test Regular.ttf.original.bak',dates)
+        with TTFont(target) as font:
+            self.assertEqual((font['head'].created,font['head'].modified),head_dates)
+
+    def test_extracted_fonts_inherit_collection_dates(self):
+        member = self.folder/'member.ttf'
+        make_font(member)
+        source = self.folder/'collection.ttc'
+        collection=TTCollection()
+        collection.fonts=[TTFont(member)]
+        collection.save(source)
+        collection.close()
+        member.unlink()
+        dates=self.historic_dates(source)
+        self.run_renamer()
+        self.assert_original_dates(source,dates)
+        self.assert_original_dates(self.folder/'Test Regular.ttf',dates)
+
+    def test_date_restore_failure_keeps_original_font(self):
+        path=self.folder/'old.ttf'
+        make_font(path,' Test Regular ')
+        engine=self.run_renamer()
+        target=self.folder/'Test Regular.ttf'
+        before=target.read_bytes()
+        with patch.object(FileDates,'restore',side_effect=OSError('date restoration failed')):
+            self.assertEqual(normalize_retained_names(engine),0)
+        self.assertEqual(target.read_bytes(),before)
+        self.assertEqual(engine.errors,1)
 
     def test_normalization_warning_identifies_retained_font(self):
         path = self.folder / 'Test Regular.ttf'

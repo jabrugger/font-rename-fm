@@ -29,6 +29,51 @@ FONT_SUFFIXES = {'.ttf', '.otf', '.ttc', '.otc'}
 DISPLAY_NAME_IDS = {1, 2, 4, 16, 17, 18, 21, 22}
 
 
+@dataclass(frozen=True)
+class FileDates:
+    accessed_ns: int
+    modified_ns: int
+    created_ns: int | None
+
+    @classmethod
+    def capture(cls, path):
+        info = path.stat()
+        return cls(info.st_atime_ns, info.st_mtime_ns,
+                   getattr(info, 'st_birthtime_ns', None))
+
+    def restore(self, path):
+        if os.name != 'nt':
+            os.utime(path, ns=(self.accessed_ns, self.modified_ns))
+            return
+        # utime cannot restore Windows creation time. Set all three FILETIMEs
+        # on a closed output file before replacing the original atomically.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME)]
+        kernel.SetFileTime.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        def filetime(ns):
+            ticks = ns // 100 + 116444736000000000
+            return wintypes.FILETIME(ticks & 0xffffffff, ticks >> 32)
+        created = filetime(self.created_ns) if self.created_ns is not None else None
+        accessed, modified = filetime(self.accessed_ns), filetime(self.modified_ns)
+        handle = kernel.CreateFileW(str(path.resolve()), 0x100, 7, None, 3, 0, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel.SetFileTime(handle, ctypes.byref(created) if created else None,
+                                      ctypes.byref(accessed), ctypes.byref(modified)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(handle)
+
+
 def local_timestamp():
     return datetime.now().isoformat(sep=' ', timespec='milliseconds')
 
@@ -307,6 +352,7 @@ def normalize_retained_names(renamer):
         if ref.path.suffix.lower() not in {'.ttf', '.otf'}:
             continue
         try:
+            original_dates = FileDates.capture(ref.path) if renamer.apply else None
             original = ref.read()
             with font_diagnostics(ref.path), TTFont(io.BytesIO(original), recalcTimestamp=False) as font:
                 changes = normalize_internal_names(font)
@@ -338,11 +384,13 @@ def normalize_retained_names(renamer):
                     backup.parent.mkdir(exist_ok=True)
                     with backup.open('xb') as output:
                         output.write(original)
+                    original_dates.restore(backup)
                     temp_path = None
                     try:
                         with tempfile.NamedTemporaryFile(dir=ref.path.parent, delete=False) as output:
                             temp_path = Path(output.name)
                             output.write(updated)
+                        original_dates.restore(temp_path)
                         if ref.path.read_bytes() != original:
                             raise RuntimeError('Source changed; normalization skipped')
                         os.replace(temp_path, ref.path)
@@ -678,6 +726,7 @@ class Renamer:
         self.remember(data, Retained(target, target if self.apply else source))
 
     def unpack_collection(self, source):
+        source_dates = FileDates.capture(source) if self.apply else None
         collection_data = source.read_bytes()
         ref = self.duplicate(collection_data)
         if ref is not None:
@@ -688,13 +737,13 @@ class Renamer:
                 if self.should_cancel():
                     break
                 try:
-                    self.extract_member(source, font)
+                    self.extract_member(source, font, source_dates)
                 except Exception as exc:
                     self.errors += 1
                     print(f'ERROR (collection member {index} kept in original): {source}: {exc}')
         self.remember(collection_data, Retained(source, source))
 
-    def extract_member(self, source, font):
+    def extract_member(self, source, font, source_dates=None):
         stem = filename_stem(get_font_name(font), self.transliterate)
         extension = '.otf' if 'CFF ' in font or 'CFF2' in font else '.ttf'
         buffer = io.BytesIO()
@@ -713,6 +762,11 @@ class Renamer:
         if self.apply:
             with target.open('xb') as output:
                 output.write(data)
+            try:
+                (source_dates or FileDates.capture(source)).restore(target)
+            except Exception:
+                target.unlink()
+                raise
         self.remember(data, Retained(target, target, None if self.apply else data))
         self.changed += 1
 
