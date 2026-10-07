@@ -5,7 +5,7 @@ description = "Preview-first font renaming, exact deduplication, transliteration
 authors = ["Jay Soren <futuremotiondev@gmail.com>"]
 maintainers = ["jabrugger"]
 license = "MIT"
-repository = "https://github.com/jabrugger/font-rename-fm"
+repository = "https://github.com/jabrugger/font-rename-neo"
 readme = "README.md"
 keywords = ["font", "rename", "typeface", "unpack", "ttf", "otf", "ttc", "otc"]
 

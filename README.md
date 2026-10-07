@@ -6,7 +6,7 @@ This MIT-licensed fork extends [i-defranca/font-rename-fm](https://github.com/i-
 
 ## Install
 
-Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-fm/releases), then install it:
+Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-neo/releases), then install it:
 
 ```console
 python -m pip install ./font_rename_fm-0.3.1-py3-none-any.whl
