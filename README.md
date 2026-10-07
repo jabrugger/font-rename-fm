@@ -4,33 +4,35 @@ A cross-platform Python CLI that renames fonts from their internal names, remove
 
 This MIT-licensed fork extends [i-defranca/font-rename-fm](https://github.com/i-defranca/font-rename-fm), originally derived from [whtsky/font-rename](https://github.com/whtsky/font-rename). Original authorship and license are preserved. This fork's releases are distributed on GitHub; `pip install font-rename-fm` from PyPI installs the upstream package, not this fork.
 
-The GitHub repository is named `font-rename-neo`. The distribution (`font-rename-fm`), Python module (`font_rename_fm`) and command (`font-rename`) retain their existing names for compatibility.
+The repository, Python distribution and command are `font-rename-neo`; the module is `font_rename_neo`. This version has a separate identity from the old `font-rename-fm` package and does not replace its commands or imports.
 
-Prefer a Windows interface? [Font Renamer GUI](https://github.com/jabrugger/font-rename-gui) includes this engine and Python in one portable download. Neither a separate engine download nor a Python installation is needed for the GUI.
+Prefer a Windows interface? [Font Rename Neo GUI](https://github.com/jabrugger/font-rename-neo-gui) includes this engine and Python in one portable download. Neither a separate engine download nor a Python installation is needed for the GUI.
 
 ## Install
 
 Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-neo/releases), then install it:
 
 ```console
-python -m pip install ./font_rename_fm-0.3.2-py3-none-any.whl
+python -m pip install ./font_rename_neo-0.4.0-py3-none-any.whl
 ```
 
 Alternatively, install this repository checkout with `python -m pip install .`.
 
-On Windows, use `py -3.14` instead of `python` to select Python 3.14 explicitly. The `font-rename` entry point is available when Python's Scripts directory is on PATH; the module command below avoids that requirement.
+On Windows, use `py -3.14` instead of `python` to select Python 3.14 explicitly. The `font-rename-neo` entry point is available when Python's Scripts directory is on PATH; the module command below avoids that requirement.
+
+Verify the installed engine with `python -m font_rename_neo.rename --version` or `font-rename-neo --version`.
 
 ## Preview and apply
 
 ```console
-python -m font_rename_fm.rename "C:\Fonts"
-python -m font_rename_fm.rename "C:\Fonts" "D:\MoreFonts"
+python -m font_rename_neo.rename "C:\Fonts"
+python -m font_rename_neo.rename "C:\Fonts" "D:\MoreFonts"
 ```
 
 The default is a preview. It shows current and proposed filenames on separate lines. No fonts are changed until `--apply` is supplied:
 
 ```console
-python -m font_rename_fm.rename "C:\Fonts" --apply
+python -m font_rename_neo.rename "C:\Fonts" --apply
 ```
 
 Test on a copy first. `--apply` can rename files, extract collection members and delete exact duplicates. Run while the input folders are otherwise idle. There is no general undo function; internal normalization has per-font backups, but ordinary renames and duplicate removal do not.
@@ -38,10 +40,10 @@ Test on a copy first. `--apply` can rename files, extract collection members and
 ## Text log
 
 ```console
-python -m font_rename_fm.rename "C:\Fonts" --normalize-internal --apply --log
+python -m font_rename_neo.rename "C:\Fonts" --normalize-internal --apply --log
 ```
 
-Use `--log` without a path for `font_renamer[YYYY-MM-DD].log` in the current working folder (local date), or `--log "C:\Fonts\rename.log"` for a custom path. Both append the complete output to a UTF-8 file while keeping console output. Every log line includes the running PC's local date/time and milliseconds, without a timezone label, including FontTools diagnostics. Sessions also include start/end markers, arguments and exit status. Console output keeps its original format. Existing contents are preserved; the parent folder must exist. If the log cannot be opened, processing stops before font changes. Preview may write the requested log but leaves fonts unchanged.
+Use `--log` without a path for `font_rename_neo[YYYY-MM-DD].log` in the current working folder (local date), or `--log "C:\Fonts\rename.log"` for a custom path. Both append the complete output to a UTF-8 file while keeping console output. Every log line includes the running PC's local date/time and milliseconds, without a timezone label, including FontTools diagnostics. Sessions also include start/end markers, arguments and exit status. Console output keeps its original format. Existing contents are preserved; the parent folder must exist. If the log cannot be opened, processing stops before font changes. Preview may write the requested log but leaves fonts unchanged.
 
 ## Behavior
 
@@ -61,8 +63,8 @@ The tool does not consult web catalogs, infer canonical commercial names, move f
 ## Optional internal-name normalization
 
 ```console
-python -m font_rename_fm.rename "C:\Fonts" --normalize-internal
-python -m font_rename_fm.rename "C:\Fonts" --normalize-internal --apply
+python -m font_rename_neo.rename "C:\Fonts" --normalize-internal
+python -m font_rename_neo.rename "C:\Fonts" --normalize-internal --apply
 ```
 
 Compacts redundant zero padding in validated format-0 name tables; gaps containing nonzero data are preserved. Normalizes display family, style and full-name records: whitespace, forbidden filename characters and leading `☞` markers. Unusable nonempty style fields (including `?` or marker-only values) are recovered from matching style records or coherent OS/2/head metadata. Legacy ID 2 stays distinct from typographic IDs 17/22. Conflicting or insufficient evidence yields `Unknown`, a tool-defined placeholder, and each decision is logged. Legitimately empty optional fields remain empty. Also removes leading markers from CFF `FamilyName` and `FullName`, including the UTF-8 marker exposed as Latin-1 text. Technical PostScript and unique identifiers are preserved.

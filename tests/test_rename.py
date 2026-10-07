@@ -12,9 +12,9 @@ from unittest.mock import patch
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTCollection, TTFont
-from font_rename_fm.rename import (Renamer, clean_name, collect_files,
+from font_rename_neo.rename import (Renamer, clean_name, collect_files,
                                   filename_stem, get_font_name, main)
-from font_rename_fm.rename import normalize_internal_names, normalize_retained_names, FileDates
+from font_rename_neo.rename import normalize_internal_names, normalize_retained_names, FileDates
 
 
 def make_font(path, name='Test Regular', width=500):
@@ -136,7 +136,7 @@ class RenameTests(unittest.TestCase):
         def diagnostic(font):
             logging.getLogger('fontTools.ttLib.tables._n_a_m_e').warning('Name diagnostic')
             return []
-        with contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.normalize_internal_names', side_effect=diagnostic):
+        with contextlib.redirect_stderr(errors), patch('font_rename_neo.rename.normalize_internal_names', side_effect=diagnostic):
             normalize_retained_names(engine)
         self.assertIn('Name diagnostic', errors.getvalue())
         self.assertIn(f'FILE: {path.resolve()}', errors.getvalue())
@@ -147,12 +147,12 @@ class RenameTests(unittest.TestCase):
         logfile = self.folder / 'session.log'
         logfile.write_text('PREVIOUS SESSION\n', encoding='utf-8')
         errors = io.StringIO()
-        from font_rename_fm.rename import get_font_name as original_name
+        from font_rename_neo.rename import get_font_name as original_name
         def diagnostic(font):
             logging.getLogger('fontTools.ttLib').warning('Diagnostic 中文')
             return original_name(font)
         before = path.read_bytes()
-        with contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.get_font_name', side_effect=diagnostic):
+        with contextlib.redirect_stderr(errors), patch('font_rename_neo.rename.get_font_name', side_effect=diagnostic):
             self.assertEqual(main([str(path), '--log', str(logfile)]), 0)
         log = logfile.read_text(encoding='utf-8')
         self.assertTrue(log.startswith('PREVIOUS SESSION\n'))
@@ -219,7 +219,7 @@ class RenameTests(unittest.TestCase):
         old_directory = Path.cwd()
         try:
             os.chdir(self.folder)
-            expected = self.folder / f'font_renamer[{datetime.now().astimezone().date().isoformat()}].log'
+            expected = self.folder / f'font_rename_neo[{datetime.now().astimezone().date().isoformat()}].log'
             self.assertEqual(main([str(path), '--log']), 0)
             self.assertTrue(expected.is_file())
             self.assertIn('RENAME:', expected.read_text(encoding='utf-8'))
@@ -240,10 +240,10 @@ class RenameTests(unittest.TestCase):
             os.chdir(old_directory)
 
     def test_log_timestamps_every_line_with_fragmented_writes(self):
-        from font_rename_fm.rename import text_log
+        from font_rename_neo.rename import text_log
         logfile, console, errors = io.StringIO(), io.StringIO(), io.StringIO()
         stamp = '2026-10-05 15:23:04.123'
-        with contextlib.redirect_stdout(console), contextlib.redirect_stderr(errors), patch('font_rename_fm.rename.local_timestamp', return_value=stamp):
+        with contextlib.redirect_stdout(console), contextlib.redirect_stderr(errors), patch('font_rename_neo.rename.local_timestamp', return_value=stamp):
             with text_log(logfile, ['--log']):
                 print('RENAME:\n  CURRENT: old.ttf\n  NEW: new.ttf')
                 print('WARNING: malformed name', file=__import__('sys').stderr)
@@ -259,9 +259,9 @@ class RenameTests(unittest.TestCase):
 
     def test_timestamp_uses_machine_local_time_without_timezone_label(self):
         from datetime import datetime
-        from font_rename_fm.rename import local_timestamp
+        from font_rename_neo.rename import local_timestamp
         local = datetime(2026, 10, 5, 9, 12, 34, 567000)
-        with patch('font_rename_fm.rename.datetime') as clock:
+        with patch('font_rename_neo.rename.datetime') as clock:
             clock.now.return_value = local
             self.assertEqual(local_timestamp(), '2026-10-05 09:12:34.567')
             clock.now.assert_called_once_with()

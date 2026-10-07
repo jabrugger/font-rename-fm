@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-10-07
+
+- Rename the distribution, module, CLI and default logs to Font Rename Neo, keeping a separate identity from upstream font-rename-fm. Add --version to identify the engine.
+- Update installation, GUI links and repository documentation.
+
 ## 0.3.2 - 2026-10-07
 
 - Prefer name records decoded with their declared encoding over guessed names or names containing null characters. Prevent corrupted legacy Korean records from overriding a valid localized name solely because the guessed string is longer.
@@ -27,7 +32,7 @@
 
 - Timestamp every log line using the running PC's local time and milliseconds, without a timezone label; preserve console formatting.
 
-- Allow `--log` without a path, using `font_renamer[YYYY-MM-DD].log` in the current folder; repeated runs on the same local date append sessions.
+- Allow `--log` without a path, using `font_rename_neo[YYYY-MM-DD].log` in the current folder; repeated runs on the same local date append sessions.
 
 - Store normalization backups in a sibling `BAK` subfolder, skip backup folders during traversal, and preserve support for legacy backup locations.
 

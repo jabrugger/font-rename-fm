@@ -815,7 +815,13 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
-    parser = argparse.ArgumentParser(description='Rename fonts using internal names. Preview by default; distinct files are never overwritten.')
+    parser = argparse.ArgumentParser(prog='font-rename-neo', description='Rename fonts using internal names. Preview by default; distinct files are never overwritten.')
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        installed_version = version('font-rename-neo')
+    except PackageNotFoundError:
+        installed_version = '0.4.0'
+    parser.add_argument('--version', action='version', version=f'Font Rename Neo {installed_version} (font_rename_neo)')
     parser.add_argument('files', nargs='+', type=Path)
     parser.add_argument('--apply', action='store_true', help='Apply renames, extraction and removal of byte-identical duplicates')
     parser.add_argument('--keep-duplicates', action='store_true', help='Keep byte-identical duplicates with numbered filenames')
@@ -823,9 +829,9 @@ def main(argv=None):
     parser.add_argument('--dry-run', action='store_true', help='Explicit preview; cannot be combined with --apply')
     parser.add_argument('--normalize-internal', action='store_true', help='Also clean internal display names; --apply creates backups in a BAK subfolder')
     parser.add_argument('--log', nargs='?', type=Path,
-                        const=Path(f'font_renamer[{datetime.now().astimezone().date().isoformat()}].log'),
+                        const=Path(f'font_rename_neo[{datetime.now().astimezone().date().isoformat()}].log'),
                         metavar='PATH',
-                        help='Append all output to a UTF-8 log; without PATH use font_renamer[YYYY-MM-DD].log in the current folder')
+                        help='Append all output to a UTF-8 log; without PATH use font_rename_neo[YYYY-MM-DD].log in the current folder')
     parser.add_argument('--cancel-file', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.apply and args.dry_run:

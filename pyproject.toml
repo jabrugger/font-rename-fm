@@ -1,6 +1,6 @@
 [tool.poetry]
-name = "font-rename-fm"
-version = "0.3.2"
+name = "font-rename-neo"
+version = "0.4.0"
 description = "Preview-first font renaming, exact deduplication, transliteration and optional internal-name cleanup."
 authors = ["Jay Soren <futuremotiondev@gmail.com>"]
 maintainers = ["jabrugger"]
@@ -20,4 +20,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-font-rename = "font_rename_fm.rename:main"
+font-rename-neo = "font_rename_neo.rename:main"
