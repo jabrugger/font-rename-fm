@@ -1,15 +1,19 @@
-# font-rename-fm
+# Font Rename Neo
 
-Rename fonts using their internal names, with a preview before changing files.
+A cross-platform Python CLI that renames fonts from their internal names, removes byte-identical duplicates and optionally normalizes internal display names. Preview is the default; applying changes is explicit.
 
 This MIT-licensed fork extends [i-defranca/font-rename-fm](https://github.com/i-defranca/font-rename-fm), originally derived from [whtsky/font-rename](https://github.com/whtsky/font-rename). Original authorship and license are preserved. This fork's releases are distributed on GitHub; `pip install font-rename-fm` from PyPI installs the upstream package, not this fork.
+
+The GitHub repository is named `font-rename-neo`. The distribution (`font-rename-fm`), Python module (`font_rename_fm`) and command (`font-rename`) retain their existing names for compatibility.
+
+Prefer a Windows interface? [Font Renamer GUI](https://github.com/jabrugger/font-rename-gui) includes this engine and Python in one portable download. Neither a separate engine download nor a Python installation is needed for the GUI.
 
 ## Install
 
 Requires Python 3.12 or later. Download the wheel from [GitHub Releases](https://github.com/jabrugger/font-rename-neo/releases), then install it:
 
 ```console
-python -m pip install ./font_rename_fm-0.3.1-py3-none-any.whl
+python -m pip install ./font_rename_fm-0.3.2-py3-none-any.whl
 ```
 
 Alternatively, install this repository checkout with `python -m pip install .`.
@@ -43,7 +47,7 @@ Use `--log` without a path for `font_renamer[YYYY-MM-DD].log` in the current wor
 
 - Recursively processes TTF, OTF, TTC and OTC files. Symlinks and hidden paths beginning with `.` are skipped.
 - Uses internal full names, preferring valid native-language records where available. English Windows records take priority over legacy Macintosh records when selecting a Latin name. Detects some legacy records containing ASCII bytes incorrectly labeled as Unicode.
-- Cleans forbidden Windows filename characters, repeated whitespace, trailing spaces/periods and reserved device names. Removes leading `Ã¢ËœÅ¾` markers when followed by a name. Symbols within meaningful names are preserved.
+- Cleans forbidden Windows filename characters, repeated whitespace, trailing spaces/periods and reserved device names. Removes leading `☞` markers when followed by a name. Symbols within meaningful names are preserved.
 - For non-Latin names, produces `Transliteration [Original]`. Transliteration is automatic, not translation; language-specific readings and missing Arabic vowels cannot be inferred reliably.
 - SHA-256 narrows duplicate candidates, then exact byte comparison decides. Only byte-identical files are removed. Deduplication spans all supplied folders; the retained copy can therefore be in another input folder.
 - Different contents sharing a name are preserved. Differing style, version, manufacturer, weight, width, PostScript name or unique identifier can be added in brackets. Up to two descriptive fields are combined; a 12-digit SHA-256 prefix is the fallback. Numbers are a final fallback for retained identical copies or occupied destinations. The first retained font keeps the plain name.
@@ -61,7 +65,7 @@ python -m font_rename_fm.rename "C:\Fonts" --normalize-internal
 python -m font_rename_fm.rename "C:\Fonts" --normalize-internal --apply
 ```
 
-Compacts redundant zero padding in validated format-0 name tables; gaps containing nonzero data are preserved. Normalizes display family, style and full-name records: whitespace, forbidden filename characters and leading `Ã¢ËœÅ¾` markers. Unusable nonempty style fields (including `?` or marker-only values) are recovered from matching style records or coherent OS/2/head metadata. Legacy ID 2 stays distinct from typographic IDs 17/22. Conflicting or insufficient evidence yields `Unknown`, a tool-defined placeholder, and each decision is logged. Legitimately empty optional fields remain empty. Also removes leading markers from CFF `FamilyName` and `FullName`, including the UTF-8 marker exposed as Latin-1 text. Technical PostScript and unique identifiers are preserved.
+Compacts redundant zero padding in validated format-0 name tables; gaps containing nonzero data are preserved. Normalizes display family, style and full-name records: whitespace, forbidden filename characters and leading `☞` markers. Unusable nonempty style fields (including `?` or marker-only values) are recovered from matching style records or coherent OS/2/head metadata. Legacy ID 2 stays distinct from typographic IDs 17/22. Conflicting or insufficient evidence yields `Unknown`, a tool-defined placeholder, and each decision is logged. Legitimately empty optional fields remain empty. Also removes leading markers from CFF `FamilyName` and `FullName`, including the UTF-8 marker exposed as Latin-1 text. Technical PostScript and unique identifiers are preserved.
 
 Each edited font receives a backup in the sibling `BAK` subfolder: `BAK/filename.ttf.original.bak` or `BAK/filename.otf.original.bak`. `BAK` folders are excluded from font processing. Legacy backups beside fonts remain recognized for provenance and overwrite protection. Existing backups are never overwritten. Unreadable localized records are kept. High-byte Mac Roman records alongside native Unicode names are conservatively preserved and reported as ambiguous, since forbidden-looking characters may be bytes of multibyte text; an operation that would leave a nonempty display name empty is rejected. The edits change font bytes and remove an invalidated DSIG signature. They do not harmonize contradictory commercial names. Extracted members can be normalized; the original TTC/OTC metadata stays unchanged.
 
@@ -104,5 +108,3 @@ Comparing glyphs and consolidating different font versions is being evaluated, b
 ## Versioning
 
 See [VERSIONING.md](VERSIONING.md): corrections increment PATCH, new features increment MINOR, and major changes or a final release increment MAJOR.
-
-Local development 0.3.2 (not published): filename selection prefers names decoded with their declared encoding over guesses or records containing null characters. Generated regression tests cover corrupted Korean records alongside a valid localized name.
