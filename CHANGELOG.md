@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 - 2026-10-07
+
+- Prefer name records decoded with their declared encoding over guessed names or names containing null characters. Prevent corrupted legacy Korean records from overriding a valid localized name solely because the guessed string is longer.
+- Add generated-font regressions for malformed Korean records, preview immutability and valid-name priority.
+
+
 ## 0.3.1
 
 - Preserve filesystem modification and access timestamps during internal-name edits, and creation time on Windows.

@@ -712,6 +712,35 @@ class RenameTests(unittest.TestCase):
             font['name'].setName(b'A Charming Font Expanded', 4, 0, 0, 0)
             self.assertEqual(get_font_name(font), 'A Charming Font Expanded')
 
+    def test_valid_korean_name_outranks_long_corrupt_encoding_guess(self):
+        path=self.folder/'source.ttf'
+        make_font(path)
+        native='\uc591\uc7ac\ube14\ub7ed\uccb4'
+        from fontTools.ttLib.tables._n_a_m_e import NameRecord
+        raw=native.encode('euc_kr')
+        with TTFont(path) as font:
+            font['name'].names=[]
+            for name_id in (1,4,6):
+                for language,payload in [(0x0412,b''.join(bytes((0,b)) for b in raw)),(0x0409,raw)]:
+                    record=NameRecord()
+                    record.nameID=name_id; record.platformID=3; record.platEncID=5; record.langID=language; record.string=payload
+                    font['name'].names.append(record)
+            self.assertEqual(get_font_name(font),native)
+            font.save(path)
+        original=path.read_bytes()
+        self.run_renamer(apply=False)
+        self.assertEqual(path.read_bytes(),original)
+        self.assertIn('YangJaeBeulLeogChe',self.log.getvalue())
+        self.run_renamer()
+        self.assertEqual((self.folder/(filename_stem(native)+'.ttf')).read_bytes(),original)
+
+    def test_unicode_name_with_nulls_does_not_outrank_valid_record(self):
+        path=self.folder/'source.ttf'
+        make_font(path)
+        with TTFont(path) as font:
+            font['name'].setName('bad\x00long\x00name\x00',4,3,1,0x0412)
+            self.assertEqual(get_font_name(font),'Test Regular')
+
     def test_transliterated_actual_font(self):
         path = self.folder / 'a.ttf'
         make_font(path, '黑体')

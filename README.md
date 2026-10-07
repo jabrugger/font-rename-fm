@@ -84,7 +84,7 @@ Deduplication runs before normalization. A backup is trusted as provenance only 
 python -m unittest discover -v
 ```
 
-73 tests generate their own fonts. Coverage includes preview immutability, binary duplicates, collision metadata, changed inputs, variable fonts, multilingual and malformed name records, Windows naming rules, normalized repeat runs, TTC members, unrelated/existing backups, CFF markers and long bilingual filenames. Locally tested with Python 3.14.8 on Windows; GitHub Actions is configured for Windows and Linux with Python 3.12, 3.13 and 3.14. A configured matrix is not a claim that every remote job has already passed.
+75 tests generate their own fonts. Coverage includes preview immutability, binary duplicates, collision metadata, changed inputs, variable fonts, multilingual and malformed name records, Windows naming rules, normalized repeat runs, TTC members, unrelated/existing backups, CFF markers and long bilingual filenames. Locally tested with Python 3.14.8 on Windows; GitHub Actions is configured for Windows and Linux with Python 3.12, 3.13 and 3.14. A configured matrix is not a claim that every remote job has already passed.
 
 No user font collection or private test logs are included in the repository or release assets.
 
@@ -104,3 +104,5 @@ Comparing glyphs and consolidating different font versions is being evaluated, b
 ## Versioning
 
 See [VERSIONING.md](VERSIONING.md): corrections increment PATCH, new features increment MINOR, and major changes or a final release increment MAJOR.
+
+Local development 0.3.2 (not published): filename selection prefers names decoded with their declared encoding over guesses or records containing null characters. Generated regression tests cover corrupted Korean records alongside a valid localized name.

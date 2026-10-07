@@ -404,15 +404,21 @@ def normalize_retained_names(renamer):
     return count
 
 
-def decode_name(record):
+def decoded_name_with_quality(record):
+    """Declared-encoding names outrank guesses, including longer guesses."""
     try:
-        return record.toUnicode().strip()
+        value = record.toUnicode().strip()
+        return value, '\x00' not in value
     except (UnicodeError, LookupError):
         raw = record.toBytes()
         encoding = chardet.detect(raw)['encoding']
         if not encoding:
             raise ValueError('Cannot decode font name')
-        return raw.decode(encoding).strip()
+        return raw.decode(encoding).strip(), False
+
+
+def decode_name(record):
+    return decoded_name_with_quality(record)[0]
 
 
 def get_current_family_name(table):
@@ -421,11 +427,15 @@ def get_current_family_name(table):
         for record in table.names:
             if record.nameID == name_id:
                 try:
-                    value = decode_name(record)
+                    value, reliable = decoded_name_with_quality(record)
                     clean_name(value)  # Ignore placeholder records such as "????".
-                    records.append((record, value))
+                    records.append((record, value, reliable))
                 except (UnicodeError, LookupError, ValueError):
                     continue
+        # An encoding guess can produce plausible-looking Latin symbols and
+        # win the old longest-name heuristic over a valid localized record.
+        reliable_records = [(record, value) for record, value, reliable in records if reliable]
+        records = reliable_records or [(record, value) for record, value, _ in records]
         names = [name for _, name in records]
         latin_names = {name for name in names if not has_non_latin_letters(name)}
         native_names = []
